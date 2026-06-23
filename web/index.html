@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude session word cloud</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #0d1117; color: #c9d1d9; }
+  header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 12px 20px; border-bottom: 1px solid #21262d; }
+  h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+  label { font-size: 12px; color: #8b949e; margin-right: 4px; }
+  select, button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer; }
+  button:hover, select:hover { border-color: #58a6ff; }
+  #date { font-size: 22px; font-weight: 700; color: #58a6ff; min-width: 160px; text-align: center; }
+  #scrub { flex: 1; min-width: 200px; }
+  #cloud { display: block; margin: 0 auto; }
+  .grp { display: flex; align-items: center; gap: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude session word cloud</h1>
+  <div class="grp">
+    <label>source</label>
+    <select id="channel"></select>
+  </div>
+  <div class="grp">
+    <label>metric</label>
+    <select id="metric">
+      <option value="tfidf">distinctive (tf-idf)</option>
+      <option value="raw">frequency (raw)</option>
+    </select>
+  </div>
+  <button id="play">▶ play</button>
+  <div class="grp">
+    <label>speed</label>
+    <select id="speed">
+      <option value="2000">slow</option>
+      <option value="1200" selected>medium</option>
+      <option value="600">fast</option>
+    </select>
+  </div>
+  <input id="scrub" type="range" min="0" value="0">
+  <div id="date">—</div>
+</header>
+<canvas id="cloud"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/wordcloud@1.2.3/src/wordcloud2.min.js"></script>
+<script src="buckets.js"></script>
+<script>
+const B = window.BUCKETS;
+const channelSel = document.getElementById('channel');
+const metricSel  = document.getElementById('metric');
+const scrub      = document.getElementById('scrub');
+const dateEl     = document.getElementById('date');
+const playBtn    = document.getElementById('play');
+const speedSel   = document.getElementById('speed');
+const canvas     = document.getElementById('cloud');
+
+B.channels.forEach(c => channelSel.add(new Option(c, c)));
+scrub.max = B.buckets.length - 1;
+
+let timer = null;
+
+function sizeCanvas() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight - document.querySelector('header').offsetHeight;
+}
+
+// stable hue per word so colours don't flicker between frames
+function colorFor(word) {
+  let h = 0;
+  for (const ch of word) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return `hsl(${h}, 65%, 62%)`;
+}
+
+function render() {
+  const i = +scrub.value;
+  dateEl.textContent = B.buckets[i];
+  const frame = B.data[channelSel.value][i] || {};
+  const list = (frame[metricSel.value] || []).slice();
+  if (!list.length) {
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+  const max = list[0][1];
+  // scale weights into a font-size range; sqrt keeps the long tail readable
+  const scaled = list.map(([w, v]) => [w, 14 + 76 * Math.sqrt(v / max)]);
+  WordCloud(canvas, {
+    list: scaled,
+    weightFactor: s => s,
+    fontFamily: 'system-ui, sans-serif',
+    color: (word) => colorFor(word),
+    backgroundColor: '#0d1117',
+    rotateRatio: 0.3,
+    rotationSteps: 2,
+    drawOutOfBound: false,
+    shrinkToFit: true,
+  });
+}
+
+function step() {
+  scrub.value = (+scrub.value + 1) % B.buckets.length;
+  render();
+}
+
+function togglePlay() {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+    playBtn.textContent = '▶ play';
+  } else {
+    playBtn.textContent = '❚❚ pause';
+    step();
+    timer = setInterval(step, +speedSel.value);
+  }
+}
+
+playBtn.onclick = togglePlay;
+scrub.oninput = render;
+channelSel.onchange = render;
+metricSel.onchange = render;
+speedSel.onchange = () => { if (timer) { togglePlay(); togglePlay(); } };
+window.onresize = () => { sizeCanvas(); render(); };
+
+sizeCanvas();
+render();
+</script>
+</body>
+</html>
