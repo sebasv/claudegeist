@@ -7,5 +7,12 @@ edition = "2021"
 serde_json = "1"
 chrono = "0.4"
 
+# Tuned for distribution: a local one-shot tool, so trade a little speed for a
+# smaller download. opt-level "z" + LTO + single codegen unit shrink code,
+# panic = "abort" drops the unwinding tables, strip removes symbols.
 [profile.release]
-opt-level = 3
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
