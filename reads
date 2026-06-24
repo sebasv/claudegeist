@@ -1,1 +1,0 @@
-window.BUCKETS = {"bucket_unit":"week","buckets":[],"channels":["prompts","assistant","thinking"],"data":{"assistant":[],"prompts":[],"thinking":[]}};
