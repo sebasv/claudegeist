@@ -1,11 +1,17 @@
-//! Reads Claude Code session logs (~/.claude/projects/**/*.jsonl) and emits a
-//! time-bucketed word frequency timeline as web/buckets.js for the viewer.
+//! Reads Claude Code session logs (~/.claude/projects/**/*.jsonl) and builds a
+//! time-bucketed word frequency timeline.
 //!
 //! Three channels (prompts / assistant text / thinking) x two metrics (raw
 //! count / tf-idf) are precomputed; the frontend just toggles between them.
+//!
+//! `cargo run`                 -> scan default logs, serve at 127.0.0.1:8080
+//! `cargo run -- <logs>`       -> serve a custom logs dir
+//! `cargo run -- <logs> <out>` -> write buckets.js to <out> instead of serving
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
@@ -15,6 +21,8 @@ const TOP_N: usize = 80;
 const MIN_LEN: usize = 3;
 const MAX_LEN: usize = 30;
 const CHANNELS: [&str; 3] = ["prompts", "assistant", "thinking"];
+const ADDR: &str = "127.0.0.1:8080";
+const INDEX_HTML: &str = include_str!("../web/index.html");
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -22,11 +30,64 @@ fn main() {
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| dirs_home().join(".claude/projects"));
-    let output = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("web/buckets.js"));
+    let output = args.next().map(PathBuf::from);
 
+    let js = format!("window.BUCKETS = {};\n", build_buckets(&input));
+
+    match output {
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            fs::write(&path, js).expect("write output");
+            eprintln!("wrote {}", path.display());
+        }
+        None => serve(&js),
+    }
+}
+
+/// Single-threaded localhost server: `/` -> embedded viewer, `/buckets.js` ->
+/// the in-memory timeline. ponytail: single-threaded is fine for one local user.
+fn serve(js: &str) {
+    let listener = TcpListener::bind(ADDR).unwrap_or_else(|e| {
+        eprintln!("could not bind {ADDR}: {e} (is another instance running?)");
+        std::process::exit(1);
+    });
+    let url = format!("http://{ADDR}/");
+    eprintln!("serving word cloud at {url}  (ctrl-c to stop)");
+    open_browser(&url);
+
+    for stream in listener.incoming().flatten() {
+        let mut stream = stream;
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let path = req.split_whitespace().nth(1).unwrap_or("/");
+        let (ctype, body) = match path {
+            "/buckets.js" => ("application/javascript", js),
+            _ => ("text/html; charset=utf-8", INDEX_HTML),
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    }
+}
+
+fn open_browser(url: &str) {
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(cmd).arg(url).spawn();
+}
+
+/// Scans the logs dir and returns the timeline as a serialized JSON string.
+fn build_buckets(input: &Path) -> String {
     let stops = stopwords();
 
     // channel -> bucket-label -> word -> count
@@ -102,19 +163,14 @@ fn main() {
         data.insert(channel.to_string(), Value::Array(frames));
     }
 
+    eprintln!("built {} weekly buckets", labels.len());
     let out = json!({
         "bucket_unit": "week",
         "buckets": labels,
         "channels": CHANNELS,
         "data": data,
     });
-
-    if let Some(parent) = output.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let js = format!("window.BUCKETS = {};\n", serde_json::to_string(&out).unwrap());
-    fs::write(&output, js).expect("write output");
-    eprintln!("wrote {} ({} weekly buckets)", output.display(), labels.len());
+    serde_json::to_string(&out).unwrap()
 }
 
 /// Pulls (channel, text) pairs out of one record's message content.

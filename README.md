@@ -7,8 +7,12 @@ a single static HTML page animates it.
 ## How it works
 
 ```
-~/.claude/projects/**/*.jsonl   →   claude-wordcloud   →   web/buckets.js   →   web/index.html
+~/.claude/projects/**/*.jsonl   →   claude-wordcloud   →   http://127.0.0.1:8080
 ```
+
+The viewer (`web/index.html`) is embedded into the binary at build time and the
+timeline is held in memory, so the compiled binary is the whole app — nothing
+else needs to ship with it.
 
 The extractor splits text into three **channels** — your *prompts*, the
 assistant's *replies*, and its *thinking* — and scores each weekly bucket two
@@ -24,23 +28,21 @@ The viewer toggles channel × metric live and plays through the weeks.
 ## Usage
 
 ```sh
-cargo run --release            # reads ~/.claude/projects, writes web/buckets.js
-cd web && python3 -m http.server   # then open http://localhost:8000
+cargo run --release                          # scan ~/.claude/projects, serve at :8080
+cargo run --release -- /path/to/logs         # serve a custom logs dir
+cargo run --release -- /path/to/logs out.js  # write buckets.js instead of serving
 ```
 
-`web/buckets.js` defines `window.BUCKETS`, so you can also just open
-`web/index.html` directly from disk — no server needed.
-
-Point it elsewhere or change the output path with args:
-
-```sh
-cargo run --release -- /path/to/logs web/buckets.js
-```
+The serve modes open your browser automatically. The file-emit form is for
+deploying the viewer statically (e.g. GitHub Pages): write `web/buckets.js`
+alongside `web/index.html` and host the `web/` dir.
 
 ## Notes
 
-- `web/buckets.js` is **gitignored** — it's derived from your private session
-  history (which can include client/company terms). Regenerate it locally
-  rather than committing it.
+- Serving binds `127.0.0.1:8080` and holds everything in memory — no files are
+  written, and your session data never leaves the binary.
+- The generated `web/buckets.js` (file-emit mode) is **gitignored** — it's
+  derived from your private session history (which can include client/company
+  terms). Don't commit it.
 - Buckets are weekly (Monday-labelled). Tune `TOP_N` / bucket granularity /
   the stopword list in `src/main.rs`.
