@@ -16,7 +16,7 @@ url="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
   | grep -o "https://github.com/$REPO/releases/download/[^\"]*/$BIN" | head -1)"
 [ -n "$url" ] || { echo "Could not find a $BIN release asset for $REPO." >&2; exit 1; }
 tmp="$(mktemp)"
-echo "Downloading $BIN…"
+echo "Downloading $BIN..."
 curl -fSL "$url" -o "$tmp"
 chmod +x "$tmp"
 # curl downloads aren't quarantined, but strip the attr defensively in case.
@@ -25,7 +25,7 @@ xattr -d com.apple.quarantine "$tmp" 2>/dev/null || true
 if [ -w "$DEST" ]; then
   mv "$tmp" "$DEST/$BIN"
 else
-  echo "Installing to $DEST (needs sudo)…"
+  echo "Installing to $DEST (needs sudo)..."
   sudo mv "$tmp" "$DEST/$BIN"
 fi
 
