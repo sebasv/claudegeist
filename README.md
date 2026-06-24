@@ -48,19 +48,17 @@ Three knobs, top of the screen. Twist them while it plays.
 
 | knob | options | what you're really looking at |
 |------|---------|-------------------------------|
-| **source** | `prompts` · `assistant` · `thinking` | your words / Claude's replies / Claude's *inner monologue* |
+| **source** | `prompts` · `assistant` | your words / Claude's replies |
 | **metric** | `distinctive` · `frequency` | what made each moment *different* / what you said most |
 | **bucket** | `daily` · `weekly` · `sprint` | how zoomed-in time is |
 
-Two of these deserve a footnote:
+One of these deserves a footnote:
 
 - **`distinctive` (tf-idf) is the good one.** Raw frequency just shows `the`,
   `file`, `function` forever — the vocabulary of work, identical every week.
   *Distinctive* surfaces what was new: the library you discovered Tuesday, the
   bug that ate Thursday. Play it on `distinctive` and you get a story. Play it on
   `frequency` and you get a screensaver.
-- **`thinking` is the uncanny one.** It's the model's own reasoning trace. Watch
-  it long enough and you start to wonder which of you is the assistant.
 
 Hit **play**. Words don't snap between weeks — they swell and shrink
 *continuously*, in place, so it actually feels like time passing instead of a
@@ -76,8 +74,8 @@ slideshow. Drag the scrubber to jump. Pick your speed.
 ```
 
 1. **Read.** Every session is a JSONL log on your disk. `claudegeist` walks them
-   all, pulls the text out of each message, and sorts it into three channels
-   (your prompts, Claude's replies, Claude's thinking).
+   all, pulls the text out of each message, and sorts it into two channels
+   (your prompts and Claude's replies).
 2. **Count.** Tokenise, drop stopwords and code-noise, tally per day.
 3. **Roll up.** The daily counts collapse into weekly and sprint buckets, and
    each bucket gets scored two ways (raw count + tf-idf distinctiveness).
