@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# One-line installer for claude-wordcloud (macOS, universal binary).
-#   curl -fsSL https://raw.githubusercontent.com/sebasv/claude-wordcloud/main/install.sh | bash
+# One-line installer for claudegeist (macOS, universal binary).
+#   curl -fsSL https://raw.githubusercontent.com/sebasv/claudegeist/main/install.sh | bash
 set -euo pipefail
 
-REPO="sebasv/claude-wordcloud"
-BIN="claude-wordcloud"
+REPO="sebasv/claudegeist"
+BIN="claudegeist"
 DEST="/usr/local/bin"
 
 [ "$(uname -s)" = "Darwin" ] || { echo "This installer is macOS-only." >&2; exit 1; }

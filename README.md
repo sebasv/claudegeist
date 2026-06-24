@@ -1,13 +1,14 @@
-# claude-wordcloud
+# claudegeist
 
-A time-travelling word cloud of your Claude Code sessions. A small Rust binary
-reads your local session logs and builds a timeline of word frequencies; a
-single embedded HTML page animates it.
+The *zeitgeist* of your Claude Code sessions — a time-travelling word cloud of
+what you've been working on. A small Rust binary reads your local session logs
+and builds a timeline of word frequencies; a single embedded HTML page animates
+it.
 
 ## How it works
 
 ```
-~/.claude/projects/**/*.jsonl   →   claude-wordcloud   →   http://127.0.0.1:8080
+~/.claude/projects/**/*.jsonl   →   claudegeist   →   http://127.0.0.1:8080
 ```
 
 The viewer (`web/index.html`) is embedded into the binary at build time and the
@@ -31,22 +32,22 @@ The viewer toggles channel × metric live and plays through the timeline.
 ## Install (macOS, no cargo needed)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sebasv/claude-wordcloud/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sebasv/claudegeist/main/install.sh | bash
 ```
 
 Downloads a universal (Intel + Apple Silicon) binary from the latest release,
-drops it in `/usr/local/bin`, and you're done. Then just run `claude-wordcloud`.
+drops it in `/usr/local/bin`, and you're done. Then just run `claudegeist`.
 
 ## Usage
 
 ```sh
-claude-wordcloud                       # scan ~/.claude/projects, serve at :8080
-claude-wordcloud /path/to/logs         # serve a custom logs dir
-claude-wordcloud -b daily              # bucket by day (default: weekly; also: sprint)
-claude-wordcloud /path/to/logs out.js  # write buckets.js instead of serving
+claudegeist                       # scan ~/.claude/projects, serve at :8080
+claudegeist /path/to/logs         # serve a custom logs dir
+claudegeist -b daily              # bucket by day (default: weekly; also: sprint)
+claudegeist /path/to/logs out.js  # write buckets.js instead of serving
 ```
 
-(Building from source instead? Swap `claude-wordcloud` for `cargo run --release --`.)
+(Building from source instead? Swap `claudegeist` for `cargo run --release --`.)
 
 **Bucketing** (`-b` / `--bucket`): `daily`, `weekly` (default, Monday-labelled),
 or `sprint` (two-week blocks). More buckets = more animation frames; fewer =
