@@ -9,7 +9,12 @@ DEST="/usr/local/bin"
 
 [ "$(uname -s)" = "Darwin" ] || { echo "This installer is macOS-only." >&2; exit 1; }
 
-url="https://github.com/$REPO/releases/latest/download/$BIN"
+# Resolve the latest release asset via the API. The /releases/latest/download/
+# redirect is cached aggressively by GitHub and lags new releases; the API is
+# authoritative and unauthenticated for public repos.
+url="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+  | grep -o "https://github.com/$REPO/releases/download/[^\"]*/$BIN" | head -1)"
+[ -n "$url" ] || { echo "Could not find a $BIN release asset for $REPO." >&2; exit 1; }
 tmp="$(mktemp)"
 echo "Downloading $BIN…"
 curl -fSL "$url" -o "$tmp"
