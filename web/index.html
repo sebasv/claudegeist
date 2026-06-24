@@ -6,7 +6,7 @@
 <title>Claude session word cloud</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #0d1117; color: #c9d1d9; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #0d1117; color: #c9d1d9; overflow: hidden; }
   header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 12px 20px; border-bottom: 1px solid #21262d; }
   h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
   label { font-size: 12px; color: #8b949e; margin-right: 4px; }
@@ -14,8 +14,10 @@
   button:hover, select:hover { border-color: #58a6ff; }
   #date { font-size: 22px; font-weight: 700; color: #58a6ff; min-width: 160px; text-align: center; }
   #scrub { flex: 1; min-width: 200px; }
-  #cloud { display: block; margin: 0 auto; }
+  #cloud { display: block; }
+  #cloud text { font-family: system-ui, sans-serif; font-weight: 600; cursor: default; }
   .grp { display: flex; align-items: center; gap: 4px; }
+  #status { position: fixed; bottom: 10px; left: 20px; font-size: 12px; color: #8b949e; }
 </style>
 </head>
 <body>
@@ -44,9 +46,11 @@
   <input id="scrub" type="range" min="0" value="0">
   <div id="date">—</div>
 </header>
-<canvas id="cloud"></canvas>
+<svg id="cloud"></svg>
+<div id="status"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/wordcloud@1.2.3/src/wordcloud2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-cloud@1.2.7/build/d3.layout.cloud.js"></script>
 <script src="buckets.js"></script>
 <script>
 const B = window.BUCKETS;
@@ -56,16 +60,24 @@ const scrub      = document.getElementById('scrub');
 const dateEl     = document.getElementById('date');
 const playBtn    = document.getElementById('play');
 const speedSel   = document.getElementById('speed');
-const canvas     = document.getElementById('cloud');
+const statusEl   = document.getElementById('status');
+const svg        = d3.select('#cloud');
+
+const FONT_MIN = 12, FONT_MAX = 90;   // px range for both layout sizing and live sizing
+const TOP_WORDS = 120;                // cap words per layout for readability
 
 B.channels.forEach(c => channelSel.add(new Option(c, c)));
 scrub.max = B.buckets.length - 1;
 
 let timer = null;
+let layoutCache = {};   // "channel|metric" -> { words:[{text,x,y,rotate,maxWeight}], globalMax }
+let gNode = null;       // the centered <g> currently bound
+let currentKey = null;
 
-function sizeCanvas() {
-  canvas.width  = window.innerWidth;
-  canvas.height = window.innerHeight - document.querySelector('header').offsetHeight;
+// ── geometry ──────────────────────────────────────────────────────────────
+function cloudSize() {
+  const headerH = document.querySelector('header').offsetHeight;
+  return [window.innerWidth, Math.max(120, window.innerHeight - headerH)];
 }
 
 // stable hue per word so colours don't flicker between frames
@@ -75,34 +87,136 @@ function colorFor(word) {
   return `hsl(${h}, 65%, 62%)`;
 }
 
-function render() {
-  const i = +scrub.value;
-  dateEl.textContent = B.buckets[i];
-  const frame = B.data[channelSel.value][i] || {};
-  const list = (frame[metricSel.value] || []).slice();
-  if (!list.length) {
-    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-    return;
+// ── data helpers ────────────────────────────────────────────────────────────
+// max weight per word across all frames for a channel+metric, plus global max
+function aggregate(channel, metric) {
+  const frames = B.data[channel] || [];
+  const maxByWord = new Map();
+  for (const frame of frames) {
+    const list = (frame && frame[metric]) || [];
+    for (const [w, v] of list) {
+      const prev = maxByWord.get(w);
+      if (prev === undefined || v > prev) maxByWord.set(w, v);
+    }
   }
-  const max = list[0][1];
-  // scale weights into a font-size range; sqrt keeps the long tail readable
-  const scaled = list.map(([w, v]) => [w, 14 + 76 * Math.sqrt(v / max)]);
-  WordCloud(canvas, {
-    list: scaled,
-    weightFactor: s => s,
-    fontFamily: 'system-ui, sans-serif',
-    color: (word) => colorFor(word),
-    backgroundColor: '#0d1117',
-    rotateRatio: 0.3,
-    rotationSteps: 2,
-    drawOutOfBound: false,
-    shrinkToFit: true,
+  let words = [...maxByWord.entries()].map(([text, maxWeight]) => ({ text, maxWeight }));
+  words.sort((a, b) => b.maxWeight - a.maxWeight);
+  words = words.slice(0, TOP_WORDS);
+  const globalMax = words.length ? words[0].maxWeight : 1;
+  return { words, globalMax };
+}
+
+// sqrt scale of weight -> font-size px, comparable across time via globalMax
+function fontSize(weight, globalMax) {
+  if (globalMax <= 0) return FONT_MIN;
+  return FONT_MIN + (FONT_MAX - FONT_MIN) * Math.sqrt(weight / globalMax);
+}
+
+// per-frame weight lookup for the current channel+metric
+function frameWeights(channel, metric, i) {
+  const frame = (B.data[channel] || [])[i] || {};
+  const list = frame[metric] || [];
+  const m = new Map();
+  for (const [w, v] of list) m.set(w, v);
+  return m;
+}
+
+// ── layout (async, cached) ───────────────────────────────────────────────────
+function buildLayout(channel, metric) {
+  const key = channel + '|' + metric;
+  return new Promise(resolve => {
+    if (layoutCache[key]) { resolve(layoutCache[key]); return; }
+    const { words, globalMax } = aggregate(channel, metric);
+    const [w, h] = cloudSize();
+    if (!words.length) {
+      const empty = { words: [], globalMax };
+      layoutCache[key] = empty;
+      resolve(empty);
+      return;
+    }
+    statusEl.textContent = 'computing layout…';
+    // size each word by its MAX weight so the layout reserves room for its peak
+    const sized = words.map(d => ({
+      text: d.text,
+      maxWeight: d.maxWeight,
+      size: fontSize(d.maxWeight, globalMax),
+    }));
+    d3.layout.cloud()
+      .size([w, h])
+      .words(sized)
+      .padding(2)
+      .rotate(() => (Math.random() < 0.25 ? 90 : 0))
+      .font('system-ui, sans-serif')
+      .fontWeight(600)
+      .fontSize(d => d.size)
+      .on('end', placed => {
+        const laidOut = placed.map(d => ({
+          text: d.text,
+          x: d.x,
+          y: d.y,
+          rotate: d.rotate,
+          maxWeight: d.maxWeight,
+        }));
+        const result = { words: laidOut, globalMax };
+        layoutCache[key] = result;
+        statusEl.textContent = '';
+        resolve(result);
+      })
+      .start();
   });
 }
 
+// ── render: one <text> per layout word, entered once ─────────────────────────
+async function rebuild() {
+  const channel = channelSel.value, metric = metricSel.value;
+  const key = channel + '|' + metric;
+  currentKey = key;
+  const layout = await buildLayout(channel, metric);
+  if (currentKey !== key) return; // a newer rebuild superseded us
+
+  const [w, h] = cloudSize();
+  svg.attr('width', w).attr('height', h);
+  svg.selectAll('g').remove();
+  gNode = svg.append('g').attr('transform', `translate(${w / 2},${h / 2})`);
+
+  gNode.selectAll('text')
+    .data(layout.words, d => d.text)
+    .join('text')
+      .attr('text-anchor', 'middle')
+      .attr('transform', d => `translate(${d.x},${d.y}) rotate(${d.rotate})`)
+      .attr('fill', d => colorFor(d.text))
+      .style('font-size', '0px')
+      .style('opacity', 0)
+      .text(d => d.text);
+
+  updateFrame(+scrub.value);
+}
+
+// ── morph to frame i: resize / fade in place, never reposition ────────────────
+function updateFrame(i) {
+  dateEl.textContent = B.buckets[i] || '—';
+  if (!gNode) return;
+  const layout = layoutCache[currentKey];
+  if (!layout) return;
+  const weights = frameWeights(channelSel.value, metricSel.value, i);
+  const globalMax = layout.globalMax;
+  const dur = Math.min((+speedSel.value) * 0.8, 900);
+
+  gNode.selectAll('text')
+    .transition()
+    .duration(dur)
+    .ease(d3.easeCubicInOut)
+    .style('font-size', d => {
+      const v = weights.get(d.text);
+      return (v === undefined ? 0 : fontSize(v, globalMax)) + 'px';
+    })
+    .style('opacity', d => (weights.get(d.text) === undefined ? 0 : 1));
+}
+
+// ── playback / controls ───────────────────────────────────────────────────
 function step() {
   scrub.value = (+scrub.value + 1) % B.buckets.length;
-  render();
+  updateFrame(+scrub.value);
 }
 
 function togglePlay() {
@@ -118,14 +232,13 @@ function togglePlay() {
 }
 
 playBtn.onclick = togglePlay;
-scrub.oninput = render;
-channelSel.onchange = render;
-metricSel.onchange = render;
+scrub.oninput = () => updateFrame(+scrub.value);
+channelSel.onchange = rebuild;
+metricSel.onchange  = rebuild;
 speedSel.onchange = () => { if (timer) { togglePlay(); togglePlay(); } };
-window.onresize = () => { sizeCanvas(); render(); };
+window.onresize = () => { layoutCache = {}; rebuild(); };
 
-sizeCanvas();
-render();
+rebuild();
 </script>
 </body>
 </html>

@@ -7,6 +7,7 @@
 //! `cargo run`                 -> scan default logs, serve at 127.0.0.1:8080
 //! `cargo run -- <logs>`       -> serve a custom logs dir
 //! `cargo run -- <logs> <out>` -> write buckets.js to <out> instead of serving
+//! `cargo run -- <logs> -b daily` -> bucket by day (default weekly; also: sprint)
 
 use std::collections::HashMap;
 use std::fs;
@@ -24,15 +25,57 @@ const CHANNELS: [&str; 3] = ["prompts", "assistant", "thinking"];
 const ADDR: &str = "127.0.0.1:8080";
 const INDEX_HTML: &str = include_str!("../web/index.html");
 
+#[derive(Clone, Copy)]
+enum Bucket {
+    Daily,
+    Weekly,
+    Sprint,
+}
+
+impl Bucket {
+    fn as_str(self) -> &'static str {
+        match self {
+            Bucket::Daily => "daily",
+            Bucket::Weekly => "weekly",
+            Bucket::Sprint => "sprint",
+        }
+    }
+}
+
 fn main() {
+    // pull --bucket/-b out without disturbing positional order
+    let mut bucket = Bucket::Weekly;
+    let mut positional = Vec::new();
     let mut args = std::env::args().skip(1);
-    let input = args
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-b" | "--bucket" => {
+                let Some(val) = args.next() else {
+                    eprintln!("error: --bucket needs a value (daily|weekly|sprint)");
+                    std::process::exit(2);
+                };
+                bucket = match val.as_str() {
+                    "daily" => Bucket::Daily,
+                    "weekly" => Bucket::Weekly,
+                    "sprint" => Bucket::Sprint,
+                    other => {
+                        eprintln!("error: unknown --bucket '{other}' (expected daily|weekly|sprint)");
+                        std::process::exit(2);
+                    }
+                };
+            }
+            _ => positional.push(arg),
+        }
+    }
+
+    let mut positional = positional.into_iter();
+    let input = positional
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| dirs_home().join(".claude/projects"));
-    let output = args.next().map(PathBuf::from);
+    let output = positional.next().map(PathBuf::from);
 
-    let js = format!("window.BUCKETS = {};\n", build_buckets(&input));
+    let js = format!("window.BUCKETS = {};\n", build_buckets(&input, bucket));
 
     match output {
         Some(path) => {
@@ -87,7 +130,7 @@ fn open_browser(url: &str) {
 }
 
 /// Scans the logs dir and returns the timeline as a serialized JSON string.
-fn build_buckets(input: &Path) -> String {
+fn build_buckets(input: &Path, unit: Bucket) -> String {
     let stops = stopwords();
 
     // channel -> bucket-label -> word -> count
@@ -104,7 +147,7 @@ fn build_buckets(input: &Path) -> String {
         for line in text.lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
             let Some(ts) = v.get("timestamp").and_then(Value::as_str) else { continue };
-            let Some(bucket) = week_label(ts) else { continue };
+            let Some(bucket) = bucket_label(ts, unit) else { continue };
             let typ = v.get("type").and_then(Value::as_str).unwrap_or("");
             let content = v.pointer("/message/content");
 
@@ -163,9 +206,9 @@ fn build_buckets(input: &Path) -> String {
         data.insert(channel.to_string(), Value::Array(frames));
     }
 
-    eprintln!("built {} weekly buckets", labels.len());
+    eprintln!("built {} {} buckets", labels.len(), unit.as_str());
     let out = json!({
-        "bucket_unit": "week",
+        "bucket_unit": unit.as_str(),
         "buckets": labels,
         "channels": CHANNELS,
         "data": data,
@@ -218,12 +261,24 @@ fn round(x: f64) -> f64 {
     (x * 100000.0).round() / 100000.0
 }
 
-/// ISO-week bucket, labelled by the Monday of that week (YYYY-MM-DD).
-fn week_label(ts: &str) -> Option<String> {
+/// Bucket label for a timestamp, formatted YYYY-MM-DD. Daily is the UTC date,
+/// weekly the Monday of the ISO week, sprint the start Monday of the fortnight
+/// anchored at the 1970-01-05 Monday epoch.
+fn bucket_label(ts: &str, unit: Bucket) -> Option<String> {
     let dt: DateTime<Utc> = ts.parse().ok()?;
-    let iso = dt.iso_week();
-    let monday = NaiveDate::from_isoywd_opt(iso.year(), iso.week(), chrono::Weekday::Mon)?;
-    Some(monday.format("%Y-%m-%d").to_string())
+    let date = match unit {
+        Bucket::Daily => dt.date_naive(),
+        Bucket::Weekly => {
+            let iso = dt.iso_week();
+            NaiveDate::from_isoywd_opt(iso.year(), iso.week(), chrono::Weekday::Mon)?
+        }
+        Bucket::Sprint => {
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 5)?;
+            let offset = (dt.date_naive() - epoch).num_days().div_euclid(14) * 14;
+            epoch + chrono::Duration::days(offset)
+        }
+    };
+    Some(date.format("%Y-%m-%d").to_string())
 }
 
 fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {

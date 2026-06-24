@@ -1,8 +1,8 @@
 # claude-wordcloud
 
 A time-travelling word cloud of your Claude Code sessions. A small Rust binary
-reads your local session logs and builds a weekly timeline of word frequencies;
-a single static HTML page animates it.
+reads your local session logs and builds a timeline of word frequencies; a
+single embedded HTML page animates it.
 
 ## How it works
 
@@ -15,7 +15,7 @@ timeline is held in memory, so the compiled binary is the whole app — nothing
 else needs to ship with it.
 
 The extractor splits text into three **channels** — your *prompts*, the
-assistant's *replies*, and its *thinking* — and scores each weekly bucket two
+assistant's *replies*, and its *thinking* — and scores each time bucket two
 ways:
 
 - **raw** — plain word counts (with stopwords removed)
@@ -23,15 +23,34 @@ ways:
   time-travel interesting: each frame surfaces what was new, instead of the
   same head terms (`the`, `file`, `code`) every week.
 
-The viewer toggles channel × metric live and plays through the weeks.
+As you play through time, words resize and fade **in place** (stable layout, no
+re-shuffling), so you can actually see which terms grew and faded.
+
+The viewer toggles channel × metric live and plays through the timeline.
+
+## Install (macOS, no cargo needed)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sebasv/claude-wordcloud/main/install.sh | bash
+```
+
+Downloads a universal (Intel + Apple Silicon) binary from the latest release,
+drops it in `/usr/local/bin`, and you're done. Then just run `claude-wordcloud`.
 
 ## Usage
 
 ```sh
-cargo run --release                          # scan ~/.claude/projects, serve at :8080
-cargo run --release -- /path/to/logs         # serve a custom logs dir
-cargo run --release -- /path/to/logs out.js  # write buckets.js instead of serving
+claude-wordcloud                       # scan ~/.claude/projects, serve at :8080
+claude-wordcloud /path/to/logs         # serve a custom logs dir
+claude-wordcloud -b daily              # bucket by day (default: weekly; also: sprint)
+claude-wordcloud /path/to/logs out.js  # write buckets.js instead of serving
 ```
+
+(Building from source instead? Swap `claude-wordcloud` for `cargo run --release --`.)
+
+**Bucketing** (`-b` / `--bucket`): `daily`, `weekly` (default, Monday-labelled),
+or `sprint` (two-week blocks). More buckets = more animation frames; fewer =
+broader strokes.
 
 The serve modes open your browser automatically. The file-emit form is for
 deploying the viewer statically (e.g. GitHub Pages): write `web/buckets.js`
@@ -44,5 +63,6 @@ alongside `web/index.html` and host the `web/` dir.
 - The generated `web/buckets.js` (file-emit mode) is **gitignored** — it's
   derived from your private session history (which can include client/company
   terms). Don't commit it.
-- Buckets are weekly (Monday-labelled). Tune `TOP_N` / bucket granularity /
-  the stopword list in `src/main.rs`.
+- Tune `TOP_N` / the stopword list in `src/main.rs`.
+- Releases are cut by pushing a `v*` tag — CI builds the universal binary and
+  publishes it, which is what the install one-liner fetches.
