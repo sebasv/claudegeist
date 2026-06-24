@@ -264,7 +264,7 @@ fn tokenize(text: &str, stops: &std::collections::HashSet<&str>) -> Vec<String> 
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= MIN_LEN && w.len() <= MAX_LEN)
         .map(str::to_lowercase)
-        .filter(|w| !w.chars().all(|c| c.is_ascii_digit()))
+        .filter(|w| !w.chars().any(|c| c.is_ascii_digit()))
         .filter(|w| !stops.contains(w.as_str()))
         .collect()
 }
@@ -337,6 +337,7 @@ the this that with from have will your they been were what when where which whil
 file files line lines code add added adding change changed changes update updated run running ran test tests function functions method use using used value values name names type types return returns set get got make made new like just also need want should would could now then here there this that these those
 true false null none nil void int str string bool list dict map vec
 http https www com org github linear app issue pull com www
-def fn pub let var const async await impl mod use crate self mut ref dyn box";
+def fn pub let var const async await impl mod use crate self mut ref dyn box
+claude mcp tool tools task tasks command commands output input bash shell zsh terminal npm pnpm yarn cargo bundle git commit branch merge repo repository session prompt prompts assistant thinking token tokens skipping skip skipped completed complete pending error warning notification description directory folder";
     WORDS.split_whitespace().collect()
 }
