@@ -1,7 +1,7 @@
 //! Reads Claude Code session logs (~/.claude/projects/**/*.jsonl) and builds a
 //! time-bucketed word frequency timeline.
 //!
-//! Three channels (prompts / assistant text / thinking) x two metrics (raw
+//! Two channels (prompts / assistant text) x two metrics (raw
 //! count / tf-idf) are precomputed; the frontend just toggles between them.
 //!
 //! `cargo run`                 -> scan default logs, serve at 127.0.0.1:8080
@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 const TOP_N: usize = 80;
 const MIN_LEN: usize = 3;
 const MAX_LEN: usize = 30;
-const CHANNELS: [&str; 3] = ["prompts", "assistant", "thinking"];
+const CHANNELS: [&str; 2] = ["prompts", "assistant"];
 const ADDR: &str = "127.0.0.1:8080";
 const INDEX_HTML: &str = include_str!("../web/index.html");
 
@@ -243,10 +243,7 @@ fn extract(typ: &str, content: Option<&Value>) -> Vec<(&'static str, String)> {
             // text blocks are real prompts; tool_result blocks are excluded
             vec![("prompts", join_blocks(blocks, "text"))]
         }
-        ("assistant", Some(Value::Array(blocks))) => vec![
-            ("assistant", join_blocks(blocks, "text")),
-            ("thinking", join_blocks(blocks, "thinking")),
-        ],
+        ("assistant", Some(Value::Array(blocks))) => vec![("assistant", join_blocks(blocks, "text"))],
         _ => vec![],
     }
 }
