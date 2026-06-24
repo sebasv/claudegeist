@@ -34,16 +34,20 @@
       <option value="raw">frequency (raw)</option>
     </select>
   </div>
+  <div class="grp">
+    <label>bucket</label>
+    <select id="gran"></select>
+  </div>
   <button id="play">▶ play</button>
   <div class="grp">
     <label>speed</label>
     <select id="speed">
-      <option value="2000">slow</option>
-      <option value="1200" selected>medium</option>
-      <option value="600">fast</option>
+      <option value="5000">slow</option>
+      <option value="2600" selected>medium</option>
+      <option value="1200">fast</option>
     </select>
   </div>
-  <input id="scrub" type="range" min="0" value="0">
+  <input id="scrub" type="range" min="0" step="0.001" value="0">
   <div id="date">—</div>
 </header>
 <svg id="cloud"></svg>
@@ -56,6 +60,7 @@
 const B = window.BUCKETS;
 const channelSel = document.getElementById('channel');
 const metricSel  = document.getElementById('metric');
+const granSel    = document.getElementById('gran');
 const scrub      = document.getElementById('scrub');
 const dateEl     = document.getElementById('date');
 const playBtn    = document.getElementById('play');
@@ -63,16 +68,24 @@ const speedSel   = document.getElementById('speed');
 const statusEl   = document.getElementById('status');
 const svg        = d3.select('#cloud');
 
-const FONT_MIN = 12, FONT_MAX = 90;   // px range for both layout sizing and live sizing
+const FONT_MIN = 12, FONT_MAX = 90;   // px range for layout sizing
 const TOP_WORDS = 120;                // cap words per layout for readability
 
 B.channels.forEach(c => channelSel.add(new Option(c, c)));
-scrub.max = B.buckets.length - 1;
+B.granularities.forEach(g => granSel.add(new Option(g, g)));
+granSel.value = B.default;
 
-let timer = null;
-let layoutCache = {};   // "channel|metric" -> { words:[{text,x,y,rotate,maxWeight}], globalMax }
+let layoutCache = {};   // "gran|channel|metric" -> { words:[{text,x,y,rotate}], globalMax }
+let frameMaps = [];     // per-bucket Map(word -> weight) for the current selection
 let gNode = null;       // the centered <g> currently bound
 let currentKey = null;
+let pos = 0;            // fractional playhead in [0, nBuckets-1]
+let playing = false, rafId = null, lastT = 0;
+
+// ── selected dataset ─────────────────────────────────────────────────────────
+const curSet     = () => B.sets[granSel.value];
+const curBuckets = () => curSet().buckets;
+const selKey     = () => granSel.value + '|' + channelSel.value + '|' + metricSel.value;
 
 // ── geometry ──────────────────────────────────────────────────────────────
 function cloudSize() {
@@ -88,13 +101,12 @@ function colorFor(word) {
 }
 
 // ── data helpers ────────────────────────────────────────────────────────────
-// max weight per word across all frames for a channel+metric, plus global max
+// max weight per word across all frames for the selection, plus global max
 function aggregate(channel, metric) {
-  const frames = B.data[channel] || [];
+  const frames = curSet().data[channel] || [];
   const maxByWord = new Map();
   for (const frame of frames) {
-    const list = (frame && frame[metric]) || [];
-    for (const [w, v] of list) {
+    for (const [w, v] of (frame && frame[metric]) || []) {
       const prev = maxByWord.get(w);
       if (prev === undefined || v > prev) maxByWord.set(w, v);
     }
@@ -102,45 +114,39 @@ function aggregate(channel, metric) {
   let words = [...maxByWord.entries()].map(([text, maxWeight]) => ({ text, maxWeight }));
   words.sort((a, b) => b.maxWeight - a.maxWeight);
   words = words.slice(0, TOP_WORDS);
-  const globalMax = words.length ? words[0].maxWeight : 1;
-  return { words, globalMax };
+  return { words, globalMax: words.length ? words[0].maxWeight : 1 };
 }
 
-// sqrt scale of weight -> font-size px, comparable across time via globalMax
-function fontSize(weight, globalMax) {
+// layout sizing: sqrt scale into [FONT_MIN, FONT_MAX], reserving room for a peak
+function layoutSize(weight, globalMax) {
   if (globalMax <= 0) return FONT_MIN;
   return FONT_MIN + (FONT_MAX - FONT_MIN) * Math.sqrt(weight / globalMax);
 }
+// live sizing: scales from 0 so words shrink to nothing as their weight decays;
+// always <= the layout size at the same weight, so it never overflows its slot.
+function liveSize(weight, globalMax) {
+  if (globalMax <= 0 || weight <= 0) return 0;
+  return FONT_MAX * Math.sqrt(weight / globalMax);
+}
 
-// per-frame weight lookup for the current channel+metric
-function frameWeights(channel, metric, i) {
-  const frame = (B.data[channel] || [])[i] || {};
-  const list = frame[metric] || [];
-  const m = new Map();
-  for (const [w, v] of list) m.set(w, v);
-  return m;
+function buildFrameMaps(channel, metric) {
+  return curSet().data[channel].map(frame => {
+    const m = new Map();
+    for (const [w, v] of (frame && frame[metric]) || []) m.set(w, v);
+    return m;
+  });
 }
 
 // ── layout (async, cached) ───────────────────────────────────────────────────
 function buildLayout(channel, metric) {
-  const key = channel + '|' + metric;
+  const key = selKey();
   return new Promise(resolve => {
     if (layoutCache[key]) { resolve(layoutCache[key]); return; }
     const { words, globalMax } = aggregate(channel, metric);
     const [w, h] = cloudSize();
-    if (!words.length) {
-      const empty = { words: [], globalMax };
-      layoutCache[key] = empty;
-      resolve(empty);
-      return;
-    }
-    statusEl.textContent = 'computing layout…';
-    // size each word by its MAX weight so the layout reserves room for its peak
-    const sized = words.map(d => ({
-      text: d.text,
-      maxWeight: d.maxWeight,
-      size: fontSize(d.maxWeight, globalMax),
-    }));
+    if (!words.length) { resolve(layoutCache[key] = { words: [], globalMax }); return; }
+    statusEl.textContent = 'computing layout...';
+    const sized = words.map(d => ({ text: d.text, size: layoutSize(d.maxWeight, globalMax) }));
     d3.layout.cloud()
       .size([w, h])
       .words(sized)
@@ -150,17 +156,9 @@ function buildLayout(channel, metric) {
       .fontWeight(600)
       .fontSize(d => d.size)
       .on('end', placed => {
-        const laidOut = placed.map(d => ({
-          text: d.text,
-          x: d.x,
-          y: d.y,
-          rotate: d.rotate,
-          maxWeight: d.maxWeight,
-        }));
-        const result = { words: laidOut, globalMax };
-        layoutCache[key] = result;
+        const laidOut = placed.map(d => ({ text: d.text, x: d.x, y: d.y, rotate: d.rotate }));
         statusEl.textContent = '';
-        resolve(result);
+        resolve(layoutCache[key] = { words: laidOut, globalMax });
       })
       .start();
   });
@@ -169,10 +167,15 @@ function buildLayout(channel, metric) {
 // ── render: one <text> per layout word, entered once ─────────────────────────
 async function rebuild() {
   const channel = channelSel.value, metric = metricSel.value;
-  const key = channel + '|' + metric;
+  const key = selKey();
   currentKey = key;
   const layout = await buildLayout(channel, metric);
   if (currentKey !== key) return; // a newer rebuild superseded us
+
+  frameMaps = buildFrameMaps(channel, metric);
+  const n = curBuckets().length;
+  scrub.max = Math.max(0, n - 1);
+  if (pos > n - 1) pos = 0;
 
   const [w, h] = cloudSize();
   svg.attr('width', w).attr('height', h);
@@ -189,53 +192,57 @@ async function rebuild() {
       .style('opacity', 0)
       .text(d => d.text);
 
-  updateFrame(+scrub.value);
+  renderAt(pos);
 }
 
-// ── morph to frame i: resize / fade in place, never reposition ────────────────
-function updateFrame(i) {
-  dateEl.textContent = B.buckets[i] || '—';
-  if (!gNode) return;
-  const layout = layoutCache[currentKey];
-  if (!layout) return;
-  const weights = frameWeights(channelSel.value, metricSel.value, i);
-  const globalMax = layout.globalMax;
-  const dur = Math.min((+speedSel.value) * 0.8, 900);
+// ── continuous render at fractional time `p`: lerp weights between buckets ─────
+function renderAt(p) {
+  const buckets = curBuckets();
+  const n = buckets.length;
+  if (!gNode || !n) return;
+  const globalMax = (layoutCache[currentKey] || {}).globalMax || 1;
+  const i0 = Math.floor(p), i1 = Math.min(i0 + 1, n - 1), frac = p - i0;
+  const m0 = frameMaps[i0] || new Map(), m1 = frameMaps[i1] || new Map();
 
-  gNode.selectAll('text')
-    .transition()
-    .duration(dur)
-    .ease(d3.easeCubicInOut)
-    .style('font-size', d => {
-      const v = weights.get(d.text);
-      return (v === undefined ? 0 : fontSize(v, globalMax)) + 'px';
-    })
-    .style('opacity', d => (weights.get(d.text) === undefined ? 0 : 1));
+  dateEl.textContent = buckets[Math.round(p)] || '—';
+  scrub.value = p;
+
+  gNode.selectAll('text').each(function (d) {
+    const w0 = m0.get(d.text) || 0, w1 = m1.get(d.text) || 0;
+    const size = liveSize(w0 + (w1 - w0) * frac, globalMax);
+    this.style.fontSize = size + 'px';
+    this.style.opacity = Math.min(1, size / FONT_MIN);  // fade only in the last few px
+  });
 }
 
-// ── playback / controls ───────────────────────────────────────────────────
-function step() {
-  scrub.value = (+scrub.value + 1) % B.buckets.length;
-  updateFrame(+scrub.value);
+// ── playback: rAF loop advancing the playhead by real elapsed time ────────────
+function tick(now) {
+  if (!playing) return;
+  const n = curBuckets().length;
+  const dt = now - lastT; lastT = now;
+  if (n > 1) {
+    pos += (dt / (+speedSel.value)) * 1;   // speed = ms per bucket
+    while (pos > n - 1) pos -= (n - 1);     // loop back to the start
+  } else {
+    pos = 0;
+  }
+  renderAt(pos);
+  rafId = requestAnimationFrame(tick);
 }
 
 function togglePlay() {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-    playBtn.textContent = '▶ play';
-  } else {
-    playBtn.textContent = '❚❚ pause';
-    step();
-    timer = setInterval(step, +speedSel.value);
-  }
+  playing = !playing;
+  playBtn.textContent = playing ? '❚❚ pause' : '▶ play';
+  if (playing) { lastT = performance.now(); rafId = requestAnimationFrame(tick); }
+  else if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 }
 
 playBtn.onclick = togglePlay;
-scrub.oninput = () => updateFrame(+scrub.value);
+scrub.oninput = () => { pos = +scrub.value; renderAt(pos); };
 channelSel.onchange = rebuild;
 metricSel.onchange  = rebuild;
-speedSel.onchange = () => { if (timer) { togglePlay(); togglePlay(); } };
+granSel.onchange    = rebuild;
+speedSel.onchange = () => {};   // picked up live by the next tick
 window.onresize = () => { layoutCache = {}; rebuild(); };
 
 rebuild();

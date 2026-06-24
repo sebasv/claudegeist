@@ -129,16 +129,19 @@ fn open_browser(url: &str) {
     let _ = std::process::Command::new(cmd).arg(url).spawn();
 }
 
-/// Scans the logs dir and returns the timeline as a serialized JSON string.
-fn build_buckets(input: &Path, unit: Bucket) -> String {
+type Counts = HashMap<&'static str, HashMap<String, HashMap<String, u64>>>;
+
+/// Scans the logs dir once (counting at daily resolution) and returns the
+/// timeline as a JSON string holding all three granularities; the viewer
+/// switches between them live. `default` is the granularity shown first.
+fn build_buckets(input: &Path, default: Bucket) -> String {
     let stops = stopwords();
 
-    // channel -> bucket-label -> word -> count
-    let mut counts: HashMap<&str, HashMap<String, HashMap<String, u64>>> =
-        CHANNELS.iter().map(|c| (*c, HashMap::new())).collect();
+    // channel -> day(YYYY-MM-DD) -> word -> count, accumulated in one pass
+    let mut daily: Counts = CHANNELS.iter().map(|c| (*c, HashMap::new())).collect();
 
     let mut files = Vec::new();
-    collect_jsonl(&input, &mut files);
+    collect_jsonl(input, &mut files);
     eprintln!("scanning {} session files under {}", files.len(), input.display());
 
     let mut records = 0u64;
@@ -147,7 +150,7 @@ fn build_buckets(input: &Path, unit: Bucket) -> String {
         for line in text.lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
             let Some(ts) = v.get("timestamp").and_then(Value::as_str) else { continue };
-            let Some(bucket) = bucket_label(ts, unit) else { continue };
+            let Some(day) = day_label(ts) else { continue };
             let typ = v.get("type").and_then(Value::as_str).unwrap_or("");
             let content = v.pointer("/message/content");
 
@@ -156,7 +159,7 @@ fn build_buckets(input: &Path, unit: Bucket) -> String {
                     continue;
                 }
                 records += 1;
-                let bmap = counts.get_mut(channel).unwrap().entry(bucket.clone()).or_default();
+                let bmap = daily.get_mut(channel).unwrap().entry(day.clone()).or_default();
                 for tok in tokenize(&text, &stops) {
                     *bmap.entry(tok).or_insert(0) += 1;
                 }
@@ -165,11 +168,35 @@ fn build_buckets(input: &Path, unit: Bucket) -> String {
     }
     eprintln!("ingested {} text records", records);
 
-    // union of all bucket labels, sorted ascending
-    let mut labels: Vec<String> = counts
-        .values()
-        .flat_map(|m| m.keys().cloned())
-        .collect();
+    let mut sets = serde_json::Map::new();
+    for unit in [Bucket::Daily, Bucket::Weekly, Bucket::Sprint] {
+        sets.insert(unit.as_str().to_string(), build_set(&daily, unit));
+    }
+
+    let out = json!({
+        "channels": CHANNELS,
+        "granularities": [Bucket::Daily.as_str(), Bucket::Weekly.as_str(), Bucket::Sprint.as_str()],
+        "default": default.as_str(),
+        "sets": sets,
+    });
+    serde_json::to_string(&out).unwrap()
+}
+
+/// Rolls daily counts up to `unit` and builds its `{buckets, data}` set.
+fn build_set(daily: &Counts, unit: Bucket) -> Value {
+    // channel -> bucket-label -> word -> count, merged from daily
+    let mut counts: Counts = CHANNELS.iter().map(|c| (*c, HashMap::new())).collect();
+    for channel in CHANNELS {
+        for (day, words) in &daily[channel] {
+            let label = relabel(day, unit);
+            let bmap = counts.get_mut(channel).unwrap().entry(label).or_default();
+            for (w, &c) in words {
+                *bmap.entry(w.clone()).or_insert(0) += c;
+            }
+        }
+    }
+
+    let mut labels: Vec<String> = counts.values().flat_map(|m| m.keys().cloned()).collect();
     labels.sort();
     labels.dedup();
 
@@ -191,8 +218,7 @@ fn build_buckets(input: &Path, unit: Bucket) -> String {
                 let Some(words) = per_bucket.get(label) else {
                     return json!({"raw": [], "tfidf": []});
                 };
-                let total: u64 = words.values().sum();
-                let total = total.max(1) as f64;
+                let total = (words.values().sum::<u64>()).max(1) as f64;
 
                 let raw = top_n(words.iter().map(|(w, &c)| (w.clone(), c as f64)));
                 let tfidf = top_n(words.iter().map(|(w, &c)| {
@@ -206,14 +232,7 @@ fn build_buckets(input: &Path, unit: Bucket) -> String {
         data.insert(channel.to_string(), Value::Array(frames));
     }
 
-    eprintln!("built {} {} buckets", labels.len(), unit.as_str());
-    let out = json!({
-        "bucket_unit": unit.as_str(),
-        "buckets": labels,
-        "channels": CHANNELS,
-        "data": data,
-    });
-    serde_json::to_string(&out).unwrap()
+    json!({"buckets": labels, "data": data})
 }
 
 /// Pulls (channel, text) pairs out of one record's message content.
@@ -261,24 +280,33 @@ fn round(x: f64) -> f64 {
     (x * 100000.0).round() / 100000.0
 }
 
-/// Bucket label for a timestamp, formatted YYYY-MM-DD. Daily is the UTC date,
-/// weekly the Monday of the ISO week, sprint the start Monday of the fortnight
-/// anchored at the 1970-01-05 Monday epoch.
-fn bucket_label(ts: &str, unit: Bucket) -> Option<String> {
+/// UTC calendar date of a timestamp, formatted YYYY-MM-DD.
+fn day_label(ts: &str) -> Option<String> {
     let dt: DateTime<Utc> = ts.parse().ok()?;
-    let date = match unit {
-        Bucket::Daily => dt.date_naive(),
+    Some(dt.date_naive().format("%Y-%m-%d").to_string())
+}
+
+/// Rolls a daily date label up to `unit`. Daily is identity, weekly the Monday
+/// of the ISO week, sprint the start Monday of the fortnight anchored at the
+/// 1970-01-05 Monday epoch.
+fn relabel(day: &str, unit: Bucket) -> String {
+    let date = match NaiveDate::parse_from_str(day, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return day.to_string(),
+    };
+    let bucketed = match unit {
+        Bucket::Daily => date,
         Bucket::Weekly => {
-            let iso = dt.iso_week();
-            NaiveDate::from_isoywd_opt(iso.year(), iso.week(), chrono::Weekday::Mon)?
+            let iso = date.iso_week();
+            NaiveDate::from_isoywd_opt(iso.year(), iso.week(), chrono::Weekday::Mon).unwrap_or(date)
         }
         Bucket::Sprint => {
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 5)?;
-            let offset = (dt.date_naive() - epoch).num_days().div_euclid(14) * 14;
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 5).unwrap();
+            let offset = (date - epoch).num_days().div_euclid(14) * 14;
             epoch + chrono::Duration::days(offset)
         }
     };
-    Some(date.format("%Y-%m-%d").to_string())
+    bucketed.format("%Y-%m-%d").to_string()
 }
 
 fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -24,10 +24,11 @@ ways:
   time-travel interesting: each frame surfaces what was new, instead of the
   same head terms (`the`, `file`, `code`) every week.
 
-As you play through time, words resize and fade **in place** (stable layout, no
-re-shuffling), so you can actually see which terms grew and faded.
+As time plays, words **continuously** resize and fade in place (stable layout,
+no re-shuffling) — sizes interpolate between buckets so it flows like the
+passage of time rather than snapping frame to frame.
 
-The viewer toggles channel × metric live and plays through the timeline.
+The viewer toggles channel × metric × bucket live and plays through the timeline.
 
 ## Install (macOS, no cargo needed)
 
@@ -49,9 +50,10 @@ claudegeist /path/to/logs out.js  # write buckets.js instead of serving
 
 (Building from source instead? Swap `claudegeist` for `cargo run --release --`.)
 
-**Bucketing** (`-b` / `--bucket`): `daily`, `weekly` (default, Monday-labelled),
-or `sprint` (two-week blocks). More buckets = more animation frames; fewer =
-broader strokes.
+**Bucketing**: switch between `daily`, `weekly` (Monday-labelled), and `sprint`
+(two-week blocks) live in the viewer's *bucket* picker — all three are computed
+up front. `-b` / `--bucket` just sets which one the viewer opens on (default
+`weekly`). More buckets = finer time resolution; fewer = broader strokes.
 
 The serve modes open your browser automatically. The file-emit form is for
 deploying the viewer statically (e.g. GitHub Pages): write `web/buckets.js`
