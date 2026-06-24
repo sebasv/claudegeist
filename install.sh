@@ -30,4 +30,6 @@ else
 fi
 
 echo "Installed $BIN to $DEST/$BIN"
-echo "Run it:  $BIN"
+echo
+echo "Run it:"
+echo "  $BIN        # scans ~/.claude/projects, then opens the word cloud at http://127.0.0.1:8080"
